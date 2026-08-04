@@ -4,25 +4,6 @@
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <title>Unity Web Player | SoulSketch</title>
-
-    <!-- ⭕ 關鍵修正：在 head 注入相機攔截腳本，強制 1x 廣角與 1.0 倍率 -->
-    <script>
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-        navigator.mediaDevices.getUserMedia = function(constraints) {
-          if (constraints && constraints.video) {
-            // 完全清空 Unity 傳進來的 deviceId 限制，強制指定 1x 主廣角與 1.0 焦距
-            constraints.video = {
-              facingMode: { ideal: "environment" },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-              advanced: [{ zoom: 1.0 }]
-            };
-          }
-          return originalGetUserMedia(constraints);
-        };
-      }
-    </script>
   </head>
   <body style="text-align: center; padding: 0; border: 0; margin: 0;">
     <canvas id="unity-canvas" width=1080 height=1920 tabindex="-1" style="width: 1080px; height: 1920px; background: #231F20"></canvas>
