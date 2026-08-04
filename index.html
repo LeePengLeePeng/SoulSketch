@@ -5,112 +5,56 @@
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <title>Unity Web Player | SoulSketch</title>
 
-    <!-- iOS 部分機型會在手指/物體靠近鏡頭時「自動切到微距鏡頭」，
-         這種自動切換只有 zoom constraint 擋得住，deviceId / facingMode 都攔不住。 -->
+    <!-- ⭕ 解鎖 Channel 5 綁定：取得權限後以無縫 Track 替換強制切至 1x 原生廣角 -->
     <script>
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-        const STORAGE_KEY = "soulsketch_wide_cam_id";
 
         navigator.mediaDevices.getUserMedia = async function(constraints) {
           if (!constraints || !constraints.video) {
             return originalGetUserMedia(constraints);
           }
 
-          // 0. 之前成功用過的 deviceId，直接指定 + 照樣加 zoom:1.0（避免它中途又自動切微距）
-          const savedId = localStorage.getItem(STORAGE_KEY);
-          if (savedId) {
-            try {
-              return await originalGetUserMedia({
-                video: {
-                  deviceId: { exact: savedId },
-                  width: { ideal: 1280 },
-                  height: { ideal: 720 },
-                  advanced: [{ zoom: 1.0 }]
-                }
-              });
-            } catch (e) {
-              console.warn("[WebGL Camera] 已儲存的鏡頭 ID 失效，重新偵測:", e);
-              localStorage.removeItem(STORAGE_KEY);
+          // 1. 冷啟動第一波：請求環境相機以觸發 iOS 權限授權
+          let stream = await originalGetUserMedia({
+            video: {
+              facingMode: { ideal: "environment" },
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
             }
-          }
+          });
 
-          // 1. 主要手段：facingMode + zoom:1.0 一起下。
-          //    zoom 放在 advanced 裡是 best-effort，裝置不支援也不會整個請求失敗，
-          //    支援的裝置（多數近兩年 iPhone/Android）會被鎖在 1x 廣角，不會因為手指靠近鏡頭跳去微距。
-          let stream;
           try {
-            stream = await originalGetUserMedia({
-              video: {
-                facingMode: { ideal: "environment" },
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                advanced: [{ zoom: 1.0 }]
-              }
+            // 2. 授權後 enumerateDevices 成功取得真實鏡頭標籤
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(d => d.kind === 'videoinput');
+
+            // 3. 排除預設通道 (Channel 5/Triple/Tele) 並精準定位 1x 原生廣角鏡頭 (Wide)
+            const wideCam = videoDevices.find(d => {
+              const label = (d.label || '').toLowerCase();
+              return (label.includes('wide') || label.includes('廣角') || label.includes('back')) &&
+                     !/tele|zoom|ultra|超廣角|望遠|front|前|triple|dual/i.test(label);
             });
-          } catch (err) {
-            // 少數瀏覽器對 advanced 裡不支援的欄位處理較嚴格，直接整個 reject，這裡降級重試一次
-            console.warn("[WebGL Camera] 帶 zoom constraint 請求失敗，降級重試:", err);
-            try {
-              stream = await originalGetUserMedia({
+
+            const currentTrack = stream.getVideoTracks()[0];
+            const currentSettings = currentTrack ? currentTrack.getSettings() : {};
+
+            // 4. 若目前處於 Channel 5 (非 1x 廣角)，開啟真正的 1x 廣角鏡頭並無縫接管
+            if (wideCam && currentSettings.deviceId !== wideCam.deviceId) {
+              const wideStream = await originalGetUserMedia({
                 video: {
-                  facingMode: { ideal: "environment" },
+                  deviceId: { exact: wideCam.deviceId },
                   width: { ideal: 1280 },
                   height: { ideal: 720 }
                 }
               });
-            } catch (err2) {
-              return Promise.reject(err2);
+
+              // 廣角串流成功建立後，再關閉舊的 Channel 5 串流，避免綠點斷開
+              currentTrack.stop();
+              return wideStream;
             }
-          }
-
-          // 2. 拿到串流後，用 applyConstraints 再補一次 zoom（有些瀏覽器只有拿到 track 後才吃得進 zoom）
-          try {
-            const track = stream.getVideoTracks()[0];
-            const caps = track.getCapabilities ? track.getCapabilities() : null;
-            if (caps && caps.zoom) {
-              await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min ?? 1.0 }] });
-            }
-          } catch (e) {
-            console.warn("[WebGL Camera] applyConstraints zoom 失敗（裝置可能不支援）:", e);
-          }
-
-          // 3. label 比對作為輔助：如果拿到的鏡頭名稱看起來明顯是長焦/超廣角，嘗試換掉
-          try {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(d => d.kind === 'videoinput');
-            const currentTrack = stream.getVideoTracks()[0];
-            const currentSettings = currentTrack.getSettings();
-            const currentDevice = videoDevices.find(d => d.deviceId === currentSettings.deviceId);
-            const currentLabel = (currentDevice?.label || '').toLowerCase();
-
-            const looksWrong = /tele|zoom|ultra|超廣角|望遠/i.test(currentLabel);
-
-            if (looksWrong) {
-              const wideCam = videoDevices.find(d => {
-                const label = (d.label || '').toLowerCase();
-                return (label.includes('wide') || label.includes('廣角') || label.includes('back')) &&
-                       !/tele|zoom|ultra|超廣角|望遠|front|前/i.test(label);
-              });
-
-              if (wideCam && wideCam.deviceId !== currentSettings.deviceId) {
-                const wideStream = await originalGetUserMedia({
-                  video: {
-                    deviceId: { exact: wideCam.deviceId },
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
-                    advanced: [{ zoom: 1.0 }]
-                  }
-                });
-                stream.getTracks().forEach(t => t.stop());
-                localStorage.setItem(STORAGE_KEY, wideCam.deviceId);
-                return wideStream;
-              }
-            } else if (currentSettings.deviceId) {
-              localStorage.setItem(STORAGE_KEY, currentSettings.deviceId);
-            }
-          } catch (e) {
-            console.warn("[WebGL Camera] label 輔助檢查失敗，維持目前串流:", e);
+          } catch (err) {
+            console.warn("[WebGL Camera] 無法切換至廣角鏡頭，使用預設串流:", err);
           }
 
           return stream;
