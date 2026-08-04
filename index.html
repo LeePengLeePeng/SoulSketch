@@ -4,6 +4,64 @@
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <title>Unity Web Player | SoulSketch</title>
+
+    <!-- ⭕ 在這裡加入相機攔截腳本：解決冷啟動時標籤為空導致選到長焦鏡頭的問題 -->
+    <script>
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+
+        navigator.mediaDevices.getUserMedia = async function(constraints) {
+          if (!constraints || !constraints.video) {
+            return originalGetUserMedia(constraints);
+          }
+
+          let devices = await navigator.mediaDevices.enumerateDevices();
+          let videoDevices = devices.filter(d => d.kind === 'videoinput');
+
+          // 冷啟動處理：若權限未就緒導致 label 為空，先進行微小型喚醒取得鏡頭真實名稱
+          if (videoDevices.length > 0 && !videoDevices[0].label) {
+            try {
+              const tempStream = await originalGetUserMedia({ video: { facingMode: "environment" } });
+              tempStream.getTracks().forEach(track => track.stop());
+              devices = await navigator.mediaDevices.enumerateDevices();
+              videoDevices = devices.filter(d => d.kind === 'videoinput');
+            } catch (e) {
+              console.warn("相機權限喚醒失敗:", e);
+            }
+          }
+
+          // 精準尋找 1x 主廣角鏡頭 (排除 telephoto 長焦, ultra 超廣角, front 前鏡頭)
+          let targetDeviceId = null;
+          const wideCam = videoDevices.find(d => {
+            const label = (d.label || '').toLowerCase();
+            return (label.includes('wide') || label.includes('back') || label.includes('後')) &&
+                   !/tele|zoom|ultra|front|前/i.test(label);
+          });
+
+          if (wideCam) {
+            targetDeviceId = wideCam.deviceId;
+          } else if (videoDevices.length > 1) {
+            // 若標籤仍無法識別，避開 index 0 (長焦)，改選 index 1
+            targetDeviceId = videoDevices[1].deviceId;
+          }
+
+          const newConstraints = {
+            video: {
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            }
+          };
+
+          if (targetDeviceId) {
+            newConstraints.video.deviceId = { exact: targetDeviceId };
+          } else {
+            newConstraints.video.facingMode = { ideal: "environment" };
+          }
+
+          return originalGetUserMedia(newConstraints);
+        };
+      }
+    </script>
   </head>
   <body style="text-align: center; padding: 0; border: 0; margin: 0;">
     <canvas id="unity-canvas" width=1080 height=1920 tabindex="-1" style="width: 1080px; height: 1920px; background: #231F20"></canvas>
