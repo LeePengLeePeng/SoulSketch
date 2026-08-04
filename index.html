@@ -9,10 +9,30 @@
     <script>
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+        const STORAGE_KEY = "soulsketch_wide_cam_id";
 
         navigator.mediaDevices.getUserMedia = async function(constraints) {
           if (!constraints || !constraints.video) {
             return originalGetUserMedia(constraints);
+          }
+
+          // 0. 之前已經找到過廣角鏡頭的 deviceId？直接用它請求，
+          //    跳過「先長焦、再切換」的中間步驟，冷啟動也不會有時間差閃到長焦。
+          const savedId = localStorage.getItem(STORAGE_KEY);
+          if (savedId) {
+            try {
+              return await originalGetUserMedia({
+                video: {
+                  deviceId: { exact: savedId },
+                  width: { ideal: 1280 },
+                  height: { ideal: 720 }
+                }
+              });
+            } catch (e) {
+              // 存的 deviceId 可能已失效（換手機、鏡頭拔插等），清掉重新走完整流程
+              console.warn("[WebGL Camera] 已儲存的鏡頭 ID 失效，重新偵測:", e);
+              localStorage.removeItem(STORAGE_KEY);
+            }
           }
 
           // 1. 第一次請求：先彈出權限詢問框，取得初始畫面
@@ -44,11 +64,31 @@
             const currentTrack = initialStream.getVideoTracks()[0];
             const currentDeviceId = currentTrack ? currentTrack.getSettings().deviceId : null;
 
+            // Safari 常常不給有意義的 label（例如都叫 "Back Camera"），
+            // 這種情況改用 zoom capability 判斷：min zoom 越接近 1 越可能是主廣角鏡頭。
+            let bestCam = wideCam;
+            if (!bestCam) {
+              let bestZoomMin = Infinity;
+              for (const d of videoDevices) {
+                const label = (d.label || '').toLowerCase();
+                if (/front|前/i.test(label)) continue;
+                try {
+                  const testStream = await originalGetUserMedia({ video: { deviceId: { exact: d.deviceId } } });
+                  const caps = testStream.getVideoTracks()[0].getCapabilities?.();
+                  testStream.getTracks().forEach(t => t.stop());
+                  if (caps && caps.zoom && caps.zoom.min < bestZoomMin) {
+                    bestZoomMin = caps.zoom.min;
+                    bestCam = d;
+                  }
+                } catch (e) { /* 略過這顆鏡頭 */ }
+              }
+            }
+
             // 3. 若抓到 1x 廣角鏡頭且當前不是它，立即開啓廣角鏡頭並無縫接管
-            if (wideCam && currentDeviceId !== wideCam.deviceId) {
+            if (bestCam && currentDeviceId !== bestCam.deviceId) {
               const wideStream = await originalGetUserMedia({
                 video: {
-                  deviceId: { exact: wideCam.deviceId },
+                  deviceId: { exact: bestCam.deviceId },
                   width: { ideal: 1280 },
                   height: { ideal: 720 }
                 }
@@ -56,7 +96,11 @@
 
               // 順利拿到廣角串流後，才關閉舊的長焦串流
               initialStream.getTracks().forEach(t => t.stop());
+              localStorage.setItem(STORAGE_KEY, bestCam.deviceId);
               return wideStream;
+            } else if (currentDeviceId) {
+              // 一開始給的就已經是廣角，直接記起來，下次不用再繞這一圈
+              localStorage.setItem(STORAGE_KEY, currentDeviceId);
             }
           } catch (e) {
             console.warn("[WebGL Camera] 自動切換廣角鏡頭失敗，維持初始串流:", e);
