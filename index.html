@@ -10,12 +10,26 @@
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
 
+        // 輪詢等待機制：解決初次開啟時 iOS label 為空字串的問題
+        async function getDevicesWithRetry(maxRetries = 10, delayMs = 100) {
+          for (let i = 0; i < maxRetries; i++) {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(d => d.kind === 'videoinput');
+            // 只要確認有拿到任何鏡頭名稱，代表 iOS WebKit 已完成寫入
+            if (videoDevices.some(d => d.label && d.label.length > 0)) {
+              return videoDevices;
+            }
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+          }
+          return await navigator.mediaDevices.enumerateDevices();
+        }
+
         navigator.mediaDevices.getUserMedia = async function(constraints) {
           if (!constraints || !constraints.video) {
             return originalGetUserMedia(constraints);
           }
 
-          // 1. 啟動第一波：取得 iOS 權限
+          // 1. 冷啟動第一波：請求權限並喚醒硬體
           let stream = await originalGetUserMedia({
             video: {
               facingMode: { ideal: "environment" },
@@ -25,19 +39,16 @@
           });
 
           try {
-            // 2. 取得完整標籤名稱
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(d => d.kind === 'videoinput');
+            // 2. 強制等待 iOS 載入完整的鏡頭名稱 (label)
+            const videoDevices = await getDevicesWithRetry(10, 100);
 
-            // 3. 修正過濾邏輯：優先找尋包含 'back wide' 或 '廣角' 的實體 Channel 0 鏡頭
-            // 避開僅有 'Back Camera' 的 Channel 5 虛擬鏡頭
+            // 3. 獲取名稱後，精準定位 1x 原生廣角 (Channel 0)
             let wideCam = videoDevices.find(d => {
               const label = (d.label || '').toLowerCase();
               return (label.includes('back wide') || label.includes('廣角')) &&
                      !/ultra|tele|超廣角|望遠|front|前/i.test(label);
             });
 
-            // 備用匹配方案
             if (!wideCam) {
               wideCam = videoDevices.find(d => {
                 const label = (d.label || '').toLowerCase();
@@ -48,7 +59,7 @@
             const currentTrack = stream.getVideoTracks()[0];
             const currentSettings = currentTrack ? currentTrack.getSettings() : {};
 
-            // 4. 強制替換串流至 1x 原生廣角 (Channel 0)
+            // 4. 若目前開啟的不是 1x 廣角鏡頭，無縫替換為 1x 鏡頭串流
             if (wideCam && currentSettings.deviceId !== wideCam.deviceId) {
               const wideStream = await originalGetUserMedia({
                 video: {
@@ -62,7 +73,7 @@
               return wideStream;
             }
           } catch (err) {
-            console.warn("[WebGL Camera] 無法切換至廣角鏡頭，使用預設串流:", err);
+            console.warn("[WebGL Camera] 鎖定廣角鏡頭失敗，使用預設串流:", err);
           }
 
           return stream;
