@@ -15,7 +15,7 @@
             return originalGetUserMedia(constraints);
           }
 
-          // 1. 冷啟動第一波：請求環境相機以觸發 iOS 權限授權
+          // 1. 啟動第一波：取得 iOS 權限
           let stream = await originalGetUserMedia({
             video: {
               facingMode: { ideal: "environment" },
@@ -25,21 +25,30 @@
           });
 
           try {
-            // 2. 授權後 enumerateDevices 成功取得真實鏡頭標籤
+            // 2. 取得完整標籤名稱
             const devices = await navigator.mediaDevices.enumerateDevices();
             const videoDevices = devices.filter(d => d.kind === 'videoinput');
 
-            // 3. 排除預設通道 (Channel 5/Triple/Tele) 並精準定位 1x 原生廣角鏡頭 (Wide)
-            const wideCam = videoDevices.find(d => {
+            // 3. 修正過濾邏輯：優先找尋包含 'back wide' 或 '廣角' 的實體 Channel 0 鏡頭
+            // 避開僅有 'Back Camera' 的 Channel 5 虛擬鏡頭
+            let wideCam = videoDevices.find(d => {
               const label = (d.label || '').toLowerCase();
-              return (label.includes('wide') || label.includes('廣角') || label.includes('back')) &&
-                     !/tele|zoom|ultra|超廣角|望遠|front|前|triple|dual/i.test(label);
+              return (label.includes('back wide') || label.includes('廣角')) &&
+                     !/ultra|tele|超廣角|望遠|front|前/i.test(label);
             });
+
+            // 備用匹配方案
+            if (!wideCam) {
+              wideCam = videoDevices.find(d => {
+                const label = (d.label || '').toLowerCase();
+                return label.includes('wide') && !/ultra|tele|超廣角|望遠|front|前/i.test(label);
+              });
+            }
 
             const currentTrack = stream.getVideoTracks()[0];
             const currentSettings = currentTrack ? currentTrack.getSettings() : {};
 
-            // 4. 若目前處於 Channel 5 (非 1x 廣角)，開啟真正的 1x 廣角鏡頭並無縫接管
+            // 4. 強制替換串流至 1x 原生廣角 (Channel 0)
             if (wideCam && currentSettings.deviceId !== wideCam.deviceId) {
               const wideStream = await originalGetUserMedia({
                 video: {
@@ -49,7 +58,6 @@
                 }
               });
 
-              // 廣角串流成功建立後，再關閉舊的 Channel 5 串流，避免綠點斷開
               currentTrack.stop();
               return wideStream;
             }
