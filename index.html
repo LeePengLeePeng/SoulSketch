@@ -3,89 +3,14 @@
   <head>
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Unity Web Player | SoulSketch 01</title>
-
-    <!-- ⭕ 解鎖 Channel 5 綁定：取得權限後以無縫 Track 替換強制切至 1x 原生廣角 -->
-    <script>
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-
-        // 輪詢等待機制：解決初次開啟時 iOS label 為空字串的問題
-        async function getDevicesWithRetry(maxRetries = 10, delayMs = 100) {
-          for (let i = 0; i < maxRetries; i++) {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(d => d.kind === 'videoinput');
-            // 只要確認有拿到任何鏡頭名稱，代表 iOS WebKit 已完成寫入
-            if (videoDevices.some(d => d.label && d.label.length > 0)) {
-              return videoDevices;
-            }
-            await new Promise(resolve => setTimeout(resolve, delayMs));
-          }
-          return await navigator.mediaDevices.enumerateDevices();
-        }
-
-        navigator.mediaDevices.getUserMedia = async function(constraints) {
-          if (!constraints || !constraints.video) {
-            return originalGetUserMedia(constraints);
-          }
-
-          // 1. 冷啟動第一波：請求權限並喚醒硬體
-          let stream = await originalGetUserMedia({
-            video: {
-              facingMode: { ideal: "environment" },
-              width: { ideal: 1280 },
-              height: { ideal: 720 }
-            }
-          });
-
-          try {
-            // 2. 強制等待 iOS 載入完整的鏡頭名稱 (label)
-            const videoDevices = await getDevicesWithRetry(10, 100);
-
-            // 3. 獲取名稱後，精準定位 1x 原生廣角 (Channel 0)
-            let wideCam = videoDevices.find(d => {
-              const label = (d.label || '').toLowerCase();
-              return (label.includes('back wide') || label.includes('廣角')) &&
-                     !/ultra|tele|超廣角|望遠|front|前/i.test(label);
-            });
-
-            if (!wideCam) {
-              wideCam = videoDevices.find(d => {
-                const label = (d.label || '').toLowerCase();
-                return label.includes('wide') && !/ultra|tele|超廣角|望遠|front|前/i.test(label);
-              });
-            }
-
-            const currentTrack = stream.getVideoTracks()[0];
-            const currentSettings = currentTrack ? currentTrack.getSettings() : {};
-
-            // 4. 若目前開啟的不是 1x 廣角鏡頭，無縫替換為 1x 鏡頭串流
-            if (wideCam && currentSettings.deviceId !== wideCam.deviceId) {
-              const wideStream = await originalGetUserMedia({
-                video: {
-                  deviceId: { exact: wideCam.deviceId },
-                  width: { ideal: 1280 },
-                  height: { ideal: 720 }
-                }
-              });
-
-              currentTrack.stop();
-              return wideStream;
-            }
-          } catch (err) {
-            console.warn("[WebGL Camera] 鎖定廣角鏡頭失敗，使用預設串流:", err);
-          }
-
-          return stream;
-        };
-      }
-    </script>
+    <title>Unity Web Player | SoulSketch</title>
   </head>
   <body style="text-align: center; padding: 0; border: 0; margin: 0;">
     <canvas id="unity-canvas" width=1080 height=1920 tabindex="-1" style="width: 1080px; height: 1920px; background: #231F20"></canvas>
     <script src="Build/SoulSketch.loader.js"></script>
     <script>
       if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+        // Mobile device style: fill the whole browser client area with the game canvas:
         var meta = document.createElement('meta');
         meta.name = 'viewport';
         meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
@@ -97,6 +22,7 @@
         canvas.style.position = "fixed";
 
         document.body.style.textAlign = "left";
+
       }
 
       createUnityInstance(document.querySelector("#unity-canvas"), {
@@ -108,6 +34,8 @@
         companyName: "LeePeng",
         productName: "SoulSketch",
         productVersion: "1.0.0",
+        // matchWebGLToCanvasSize: false, // Uncomment this to separately control WebGL canvas render size and DOM element size.
+        // devicePixelRatio: 1, // Uncomment this to override low DPI rendering on high DPI displays.
       }).then((unityInstance) => {
       }).catch((message) => {
         alert(message);
