@@ -3,150 +3,14 @@
   <head>
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Unity Web Player | SoulSketch 01</title>
-
-    <!-- ⭕ 鏡頭攔截器：強制鎖定 iOS 實體 1x 後置主鏡頭 (Channel 0) -->
-    <script>
-      // 是否開啟除錯訊息(先設 true,拿到 log 後可以關掉)
-      const CAMERA_DEBUG = true;
-      function camLog(...args) {
-        if (CAMERA_DEBUG) console.log("[Camera]", ...args);
-      }
-
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-        let cachedWideDeviceId = null;
-
-        // 帶重試的 enumerateDevices,因為 iOS 上 label 有時會延遲才填入
-        async function enumerateWithRetry(maxRetries = 5, delayMs = 150) {
-          for (let i = 0; i < maxRetries; i++) {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(d => d.kind === 'videoinput');
-            const hasLabels = videoDevices.some(d => d.label && d.label.length > 0);
-            camLog(`enumerate attempt ${i + 1}:`, videoDevices.map(d => ({
-              label: d.label || '(empty)',
-              id: d.deviceId.slice(0, 8)
-            })));
-            if (hasLabels || i === maxRetries - 1) {
-              return videoDevices;
-            }
-            await new Promise(r => setTimeout(r, delayMs));
-          }
-        }
-
-        function findTargetCam(videoDevices) {
-          // 第一梯隊:明確標示 wide/廣角 的後鏡頭
-          let targetCam = videoDevices.find(d => {
-            const label = (d.label || '').toLowerCase();
-            return (label.includes('back wide') || label.includes('廣角')) &&
-                   !/ultra|tele|超廣角|望遠|front|前|user|selfie/i.test(label);
-          });
-
-          // 第二梯隊:含 back/rear/後,排除前鏡頭與望遠/超廣角
-          if (!targetCam) {
-            targetCam = videoDevices.find(d => {
-              const label = (d.label || '').toLowerCase();
-              return (label.includes('back') || label.includes('rear') || label.includes('後')) &&
-                     !/ultra|tele|超廣角|望遠|front|前|user|selfie/i.test(label);
-            });
-          }
-
-          // 第三梯隊:排除所有含前鏡頭關鍵字的裝置
-          if (!targetCam) {
-            targetCam = videoDevices.find(d => {
-              const label = (d.label || '').toLowerCase();
-              return !/front|前|user|selfie|ultra|tele|超廣角|望遠/i.test(label);
-            });
-          }
-
-          // 第四梯隊(新增保底):label 完全是空字串時,只能靠數量猜
-          // 大部分裝置 enumerateDevices 回傳順序是「前鏡頭在前、後鏡頭在後」
-          // 但這條規則不保證所有裝置都適用,建議先看 debug log 確認再啟用
-          if (!targetCam && videoDevices.length > 1) {
-            const allEmpty = videoDevices.every(d => !d.label);
-            if (allEmpty) {
-              camLog('⚠️ 所有 label 皆為空,使用順序保底規則(最後一個裝置)');
-              targetCam = videoDevices[videoDevices.length - 1];
-            }
-          }
-
-          return targetCam;
-        }
-
-        navigator.mediaDevices.getUserMedia = async function(constraints) {
-          if (!constraints || !constraints.video) {
-            return originalGetUserMedia(constraints);
-          }
-
-          // 已鎖定後鏡頭 ID,強行複用
-          if (cachedWideDeviceId) {
-            const c = JSON.parse(JSON.stringify(constraints));
-            c.video = typeof c.video === 'object' ? c.video : {};
-            c.video.deviceId = { exact: cachedWideDeviceId };
-            delete c.video.facingMode;
-            camLog('複用已快取的後鏡頭 deviceId');
-            return originalGetUserMedia(c);
-          }
-
-          // 第一次要流:直接指定 environment,不要用原始(可能沒指定方向)的 constraints
-          const initialConstraints = JSON.parse(JSON.stringify(constraints));
-          initialConstraints.video = typeof initialConstraints.video === 'object'
-            ? initialConstraints.video : {};
-          initialConstraints.video.facingMode = { ideal: 'environment' };
-
-          let stream;
-          try {
-            stream = await originalGetUserMedia(initialConstraints);
-          } catch (err) {
-            camLog('指定 environment 失敗,退回原始 constraints:', err);
-            stream = await originalGetUserMedia(constraints);
-          }
-
-          try {
-            const videoDevices = await enumerateWithRetry();
-            const targetCam = findTargetCam(videoDevices);
-
-            const currentTrack = stream.getVideoTracks()[0];
-            const currentSettings = currentTrack ? currentTrack.getSettings() : {};
-            camLog('目前開啟的鏡頭 settings:', currentSettings);
-
-            // 額外驗證:如果瀏覽器有回傳 facingMode 且是 'user',一定要換
-            const isDefinitelyFront = currentSettings.facingMode === 'user';
-
-            if (targetCam && (currentSettings.deviceId !== targetCam.deviceId || isDefinitelyFront)) {
-              camLog('目前鏡頭不符,切換至:', targetCam.label || targetCam.deviceId);
-              cachedWideDeviceId = targetCam.deviceId;
-
-              currentTrack.stop();
-              await new Promise(resolve => setTimeout(resolve, 200));
-
-              return await originalGetUserMedia({
-                video: {
-                  deviceId: { exact: targetCam.deviceId },
-                  width: { ideal: 1280 },
-                  height: { ideal: 720 }
-                }
-              });
-            } else if (targetCam) {
-              cachedWideDeviceId = targetCam.deviceId;
-              camLog('目前鏡頭已符合,鎖定 deviceId:', targetCam.deviceId.slice(0, 8));
-            } else {
-              camLog('⚠️ 找不到任何符合條件的後鏡頭,維持目前串流');
-            }
-          } catch (err) {
-            console.warn("[WebGL Camera] 強制鎖定後鏡頭失敗:", err);
-          }
-
-          return stream;
-        };
-      }
-    </script>
+    <title>Unity Web Player | SoulSketch</title>
   </head>
   <body style="text-align: center; padding: 0; border: 0; margin: 0;">
     <canvas id="unity-canvas" width=1080 height=1920 tabindex="-1" style="width: 1080px; height: 1920px; background: #231F20"></canvas>
     <script src="Build/SoulSketch.loader.js"></script>
     <script>
       if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+        // Mobile device style: fill the whole browser client area with the game canvas:
         var meta = document.createElement('meta');
         meta.name = 'viewport';
         meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
@@ -158,6 +22,7 @@
         canvas.style.position = "fixed";
 
         document.body.style.textAlign = "left";
+
       }
 
       createUnityInstance(document.querySelector("#unity-canvas"), {
@@ -169,6 +34,8 @@
         companyName: "LeePeng",
         productName: "SoulSketch",
         productVersion: "1.0.0",
+        // matchWebGLToCanvasSize: false, // Uncomment this to separately control WebGL canvas render size and DOM element size.
+        // devicePixelRatio: 1, // Uncomment this to override low DPI rendering on high DPI displays.
       }).then((unityInstance) => {
       }).catch((message) => {
         alert(message);
